@@ -60,6 +60,8 @@ The course may reorder or split this progression after the teacher gathers insti
 
 ## Engineering rules
 
+- Write code comments, crate READMEs, and technical design docs as project documentation: describe behavior, interfaces, invariants, and limitations. Keep teacher/learner roles, assignment ownership, and student TODO policy in agent guidance or dedicated course materials, not implementation documentation. Document current behavior rather than conversation history or immediate decisions; keep architecture in the root README and API details in crate READMEs or rustdoc.
+
 - Use stable Rust unless an assignment explicitly teaches an unstable feature.
 - Keep `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test --all` passing.
 - Unit-test local invariants; use contract tests for interchangeable components; use integration tests for SQL behavior.
@@ -69,4 +71,4 @@ The course may reorder or split this progression after the teacher gathers insti
 
 ## Current state
 
-The repository is a new Rust library with placeholder code. No database architecture or assignment boundary is implemented yet. Establish interfaces and course scope before building subsystems.
+The workspace contains the root library, `crates/peg` (general PEG procedural macro), and `crates/parser` (SQL grammar and AST transformer). The root exports the frontend as `chilidb::parser`. These crates are instructor-provided infrastructure, not student TODOs; see the root and crate READMEs. Binding, planning, execution, storage, and transactions remain unimplemented. Establish course scope before assigning their components to students.

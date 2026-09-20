@@ -1,14 +1,13 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! ChiliDB: a small OLTP database with independently replaceable layers.
+//!
+//! The SQL frontend produces an unbound AST without catalog lookup, type
+//! checking, planning, or execution.
+//!
+//! ```
+//! let statements = chilidb::parser::parse_sql("SELECT 1 + 2")?;
+//! assert_eq!(statements.len(), 1);
+//! # Ok::<(), chilidb::parser::ParseError>(())
+//! ```
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+/// SQL grammar, borrowed AST types, and parsing entry points.
+pub use chilidb_parser as parser;
