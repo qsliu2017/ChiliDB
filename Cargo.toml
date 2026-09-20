@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/peg", "crates/parser"]
+members = ["crates/peg", "crates/parser", "crates/binder"]
 resolver = "3"
 
 [package]
@@ -8,4 +8,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+chilidb-binder = { path = "crates/binder" }
 chilidb-parser = { path = "crates/parser" }

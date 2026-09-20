@@ -9,5 +9,8 @@
 //! # Ok::<(), chilidb::parser::ParseError>(())
 //! ```
 
+/// Catalog metadata and bound SQL representations.
+pub use chilidb_binder as binder;
+
 /// SQL grammar, borrowed AST types, and parsing entry points.
 pub use chilidb_parser as parser;

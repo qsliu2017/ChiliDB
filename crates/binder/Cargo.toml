@@ -1,0 +1,9 @@
+[package]
+name = "chilidb-binder"
+version = "0.1.0"
+edition = "2024"
+description = "Catalog metadata and bound SQL representations for ChiliDB"
+
+[dependencies]
+chilidb-parser = { path = "../parser" }
+thiserror = "2"
