@@ -114,9 +114,11 @@ does not prevent optimizing its input.
 
 ## Optimizer integration
 
-The planner does not install or run an optimizer pipeline. `datafusion-optimizer`
-is a development dependency used to test selected real upstream rules against
-these plans, including optimization beneath ModifyTable with an Insert operation.
+The planner does not install or run an optimizer pipeline. The separate
+[`chilidb-optimizer`](../optimizer/README.md) crate runs explicit rule lists over
+planned statements. `datafusion-optimizer` remains a development dependency of
+this planner crate, used to test selected real rules against these plans,
+including optimization beneath ModifyTable with an Insert operation.
 
 `PlannedStatement::with_optimized_plan` is the statement-boundary check for
 attaching an optimized result. It preserves query result metadata and checks

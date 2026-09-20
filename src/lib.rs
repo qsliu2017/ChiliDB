@@ -20,3 +20,6 @@ pub use chilidb_parser as parser;
 
 /// Logical planning, output schemas, and command plans.
 pub use chilidb_planner as planner;
+
+/// Explicit logical rewrite pipelines and statement-boundary validation.
+pub use chilidb_optimizer as optimizer;

@@ -38,9 +38,18 @@ cargo run --example plan -- 'SELECT SUM(id), COUNT(*) FROM items HAVING COUNT(*)
 
 Logical planning handles queries and commands, including grouping, windowing,
 ordering, and CTID-based modification-row identity. INSERT, UPDATE, and DELETE share a ModifyTable
-logical extension with operation-specific payloads. These examples do not execute SQL. Selected upstream optimizer
-rules are exercised in integration tests; a production optimizer pipeline,
-physical planning, and execution are not implemented.
+logical extension with operation-specific payloads. These examples do not execute SQL.
+
+To inspect an explicit optimizer rule pipeline:
+
+```sh
+cargo run --example optimize -- 'INSERT INTO items VALUES (1 + 2)'
+```
+
+The optimizer accepts an ordered rule list, preserves query/INSERT statement
+contracts, and propagates rule failures. There is no implicit default rule set.
+Commands pass through unchanged; UPDATE/DELETE optimization remains disabled.
+Physical planning and execution are not implemented.
 
 | Crate | Responsibility |
 | --- | --- |
@@ -49,7 +58,8 @@ physical planning, and execution are not implemented.
 | [`chilidb-parser`](crates/parser/README.md) | SQL grammar, AST types, and fallible tree-to-AST conversion |
 | [`chilidb-binder`](crates/binder/README.md) | Catalog-backed name resolution, typed expressions, and bound SQL commands |
 | [`chilidb-planner`](crates/planner/README.md) | Bound-AST to DataFusion logical plans, SQL output metadata, and ModifyTable operations |
-| `chilidb` | Library entry point; re-exports `common`, `parser`, `binder`, and `planner` |
+| [`chilidb-optimizer`](crates/optimizer/README.md) | Explicit rewrite pipelines, rule observation, and statement-boundary checks |
+| `chilidb` | Library entry point; re-exports `common`, `parser`, `binder`, `planner`, and `optimizer` |
 
 ```text
 PEG grammar ──compile time──> Rust matchers
@@ -67,6 +77,9 @@ SQL text ───────────────────────�
                                   ↓
                             DataFusion query / modification plan
                             or nonrelational command
+                                  │ Optimizer::optimize (query / INSERT)
+                                  ↓
+                            Validated optimized statement
 ```
 
 Matching operates directly on UTF-8 text, with explicit whitespace and keyword
@@ -104,7 +117,8 @@ cargo doc --workspace --no-deps
 
 Tests cover PEG matching and compile-time validation, SQL syntax and precedence,
 borrowing, malformed nodes, catalog-backed binding, aggregate/window scope rules,
-and logical-plan construction. No execution or storage engine is required.
+logical-plan construction, and explicit optimizer pipelines with failure and
+statement-boundary checks. No execution or storage engine is required.
 Agent workflows are documented in [AGENT.md](AGENT.md).
 
 ## References

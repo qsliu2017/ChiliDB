@@ -1,0 +1,12 @@
+[package]
+name = "chilidb-optimizer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+
+[dependencies]
+chilidb-planner = { path = "../planner" }
+datafusion-common.workspace = true
+datafusion-expr.workspace = true
+datafusion-optimizer.workspace = true
+thiserror = "2"

@@ -348,6 +348,7 @@ dependencies = [
  "arrow-schema",
  "chilidb-binder",
  "chilidb-common",
+ "chilidb-optimizer",
  "chilidb-parser",
  "chilidb-planner",
  "datafusion-common",
@@ -366,6 +367,17 @@ dependencies = [
 [[package]]
 name = "chilidb-common"
 version = "0.1.0"
+
+[[package]]
+name = "chilidb-optimizer"
+version = "0.1.0"
+dependencies = [
+ "chilidb-planner",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-optimizer",
+ "thiserror",
+]
 
 [[package]]
 name = "chilidb-parser"

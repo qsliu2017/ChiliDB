@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/common", "crates/peg", "crates/parser", "crates/binder", "crates/planner"]
+members = ["crates/common", "crates/peg", "crates/parser", "crates/binder", "crates/planner", "crates/optimizer"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -21,6 +21,7 @@ chilidb-common = { path = "crates/common" }
 chilidb-binder = { path = "crates/binder" }
 chilidb-parser = { path = "crates/parser" }
 chilidb-planner = { path = "crates/planner" }
+chilidb-optimizer = { path = "crates/optimizer" }
 
 [dev-dependencies]
 arrow-schema.workspace = true

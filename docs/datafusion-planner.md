@@ -164,10 +164,12 @@ commands cannot accept a replacement relational plan.
 These are structural safeguards, not a proof that arbitrary rules preserve modification
 effects. Relational query and modification inputs reject both nested ModifyTable nodes
 and native DataFusion DML/DDL/statement/COPY nodes, including within subqueries.
-The optimizer module must choose an explicit allowlist and expose rule
-errors. Directly applying arbitrary rules to the public native plan bypasses the
-statement-level policy. Current planner integration tests exercise selected real
-DataFusion rules; there is no installed production optimizer pipeline yet.
+[`chilidb-optimizer`](../crates/optimizer/README.md) accepts an explicit ordered
+rule list, propagates rule errors, and applies statement-boundary checks before
+and after optimization. It has no implicit default rules. Commands pass through
+without running rules; UPDATE/DELETE optimization returns an error. Directly
+applying arbitrary rules to the public native plan bypasses this policy.
+Integration tests exercise selected real DataFusion rules and rejection paths.
 
 DataFusion's optimizer does not automatically run its analyzer. Lowered inputs
 must satisfy its analyzed-plan requirements. The future physical planner must
