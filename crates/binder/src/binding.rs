@@ -32,10 +32,16 @@ impl<'catalog, C: Catalog + ?Sized> Binder<'catalog, C> {
                 projection,
                 from,
                 filter,
+                group_by,
+                having,
+                order_by,
             } => bound::Statement::Select(self.bind_select(
                 projection,
                 from.as_ref(),
                 filter.as_ref(),
+                group_by,
+                having.as_ref(),
+                order_by,
             )?),
             Statement::CreateTable { name, columns } => {
                 bound::Statement::CreateTable(self.bind_create_table(name, columns)?)
@@ -71,11 +77,15 @@ impl<'catalog, C: Catalog + ?Sized> Binder<'catalog, C> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn bind_select<'sql>(
         &self,
         projection: &[Expr<'sql>],
         from: Option<&Cow<'sql, str>>,
         filter: Option<&Expr<'sql>>,
+        group_by: &[Expr<'sql>],
+        having: Option<&Expr<'sql>>,
+        order_by: &[chilidb_parser::OrderByExpr<'sql>],
     ) -> Result<bound::Select<'sql>, BindError<C::Error>> {
         if projection.is_empty() {
             return Err(BindError::EmptyProjection);
@@ -115,6 +125,10 @@ impl<'catalog, C: Catalog + ?Sized> Binder<'catalog, C> {
             projection
                 .iter()
                 .map(|expr| {
+                    let (expr, alias) = match expr {
+                        Expr::Alias { expr, alias } => (expr.as_ref(), Some(alias)),
+                        _ => (expr, None),
+                    };
                     let name = match expr {
                         Expr::Identifier(name) | Expr::QualifiedIdentifier { column: name, .. } => {
                             name.clone()
@@ -122,8 +136,14 @@ impl<'catalog, C: Catalog + ?Sized> Binder<'catalog, C> {
                         _ => Cow::Borrowed("?column?"),
                     };
                     Ok(bound::NamedExpr {
-                        name,
-                        expr: expression::bind_expr(expr, &context)?,
+                        name: alias.cloned().unwrap_or(name),
+                        expr: expression::bind_expr_inner(
+                            expr,
+                            &context,
+                            usize::from(alias.is_some()),
+                            true,
+                            true,
+                        )?,
                     })
                 })
                 .collect::<Result<Vec<_>, BindError<C::Error>>>()?
@@ -131,10 +151,83 @@ impl<'catalog, C: Catalog + ?Sized> Binder<'catalog, C> {
         let filter = filter
             .map(|expr| expression::boolean(expression::bind_expr(expr, &context)?, "WHERE"))
             .transpose()?;
+        let group_by = group_by
+            .iter()
+            .map(|expr| expression::bind_expr(expr, &context))
+            .collect::<Result<Vec<_>, BindError<C::Error>>>()?;
+        let having = having
+            .map(|expr| {
+                expression::boolean(
+                    expression::bind_expr_inner(expr, &context, 0, true, false)?,
+                    "HAVING",
+                )
+            })
+            .transpose()?;
+        let order_by = order_by
+            .iter()
+            .map(|order| {
+                let expr = match &order.expr {
+                    Expr::Identifier(name) => {
+                        let matches: Vec<_> =
+                            projection.iter().filter(|p| p.name == *name).collect();
+                        match matches.as_slice() {
+                            [p] => p.expr.clone(),
+                            [] => {
+                                expression::bind_expr_inner(&order.expr, &context, 0, true, true)?
+                            }
+                            _ => {
+                                return Err(BindError::AmbiguousColumn {
+                                    qualifier: None,
+                                    name: name.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Expr::Literal(chilidb_parser::Literal::Number(n))
+                        if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) =>
+                    {
+                        let ordinal: usize = n.parse().map_err(|_| {
+                            BindError::InvalidStatement("ORDER BY ordinal out of range")
+                        })?;
+                        projection
+                            .get(ordinal.checked_sub(1).ok_or(BindError::InvalidStatement(
+                                "ORDER BY ordinal out of range",
+                            ))?)
+                            .ok_or(BindError::InvalidStatement("ORDER BY ordinal out of range"))?
+                            .expr
+                            .clone()
+                    }
+                    _ => expression::bind_expr_inner(&order.expr, &context, 0, true, true)?,
+                };
+                Ok(crate::aggregate::order(expr, order))
+            })
+            .collect::<Result<Vec<_>, BindError<C::Error>>>()?;
+        let is_aggregate = !group_by.is_empty()
+            || having.is_some()
+            || projection
+                .iter()
+                .any(|p| crate::aggregate::contains_aggregate(&p.expr))
+            || order_by
+                .iter()
+                .any(|o| crate::aggregate::contains_aggregate(&o.expr));
+        if is_aggregate {
+            for expr in projection
+                .iter()
+                .map(|p| &p.expr)
+                .chain(having.iter())
+                .chain(order_by.iter().map(|o| &o.expr))
+            {
+                crate::aggregate::validate_grouped::<C::Error>(expr, &group_by)?;
+            }
+        }
         Ok(bound::Select {
             source,
             projection,
             filter,
+            group_by,
+            having,
+            order_by,
+            is_aggregate,
         })
     }
 }

@@ -5,6 +5,19 @@ use crate::LogicalType;
 /// A catalog failure or semantic error in an SQL statement.
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum BindError<E> {
+    /// No supported built-in has this exact normalized name.
+    #[error("unknown function: {0}")]
+    UnknownFunction(String),
+    /// Invalid aggregate or window context or call signature.
+    #[error("invalid function call: {0}")]
+    InvalidFunction(&'static str),
+    /// A column is not determined by grouping keys.
+    #[error("expression references a column outside GROUP BY")]
+    UngroupedColumn,
+    /// An invalid or unsupported frame specification.
+    #[error("invalid or unsupported window frame: {0}")]
+    InvalidWindowFrame(&'static str),
+
     /// The catalog could not perform the lookup.
     #[error("catalog lookup failed: {0}")]
     Catalog(#[source] E),

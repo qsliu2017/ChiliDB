@@ -126,7 +126,7 @@ fn identifier<'s>(n: &Node<'s>) -> Result<Cow<'s, str>> {
             {
                 return Err(error(child, "bare identifier"));
             }
-            const RESERVED: &str = "SELECT FROM WHERE CREATE TABLE INSERT INTO VALUES UPDATE SET DELETE BEGIN COMMIT ROLLBACK OR AND NOT IS NULL TRUE FALSE PRIMARY KEY UNIQUE ORDER BY LIMIT JOIN AS GROUP HAVING UNION DISTINCT";
+            const RESERVED: &str = "SELECT FROM WHERE CREATE TABLE INSERT INTO VALUES UPDATE SET DELETE BEGIN COMMIT ROLLBACK OR AND NOT IS NULL TRUE FALSE PRIMARY KEY UNIQUE ORDER BY LIMIT JOIN AS GROUP HAVING UNION DISTINCT ASC DESC NULLS FIRST LAST FILTER OVER PARTITION ROWS RANGE BETWEEN UNBOUNDED PRECEDING FOLLOWING CURRENT ROW";
             if RESERVED
                 .split_whitespace()
                 .any(|word| word.eq_ignore_ascii_case(s))
@@ -190,7 +190,10 @@ impl<'sql> ParseNode<'sql> for Statement<'sql> {
                 {
                     vec![Expr::parse(star)?]
                 } else {
-                    expressions(p)?
+                    p.children()
+                        .iter()
+                        .map(Expr::parse)
+                        .collect::<Result<_>>()?
                 };
                 let from = c
                     .optional("From")?
@@ -200,6 +203,20 @@ impl<'sql> ParseNode<'sql> for Statement<'sql> {
                     projection,
                     from,
                     filter: filter(&mut c)?,
+                    group_by: c
+                        .optional("GroupBy")?
+                        .map(expressions)
+                        .transpose()?
+                        .unwrap_or_default(),
+                    having: c
+                        .optional("Having")?
+                        .map(|n| Expr::parse(only(n, "Expr")?))
+                        .transpose()?,
+                    order_by: c
+                        .optional("OrderBy")?
+                        .map(orderings)
+                        .transpose()?
+                        .unwrap_or_default(),
                 }
             }
             "CreateTable" => {
@@ -459,7 +476,14 @@ impl<'sql> ParseNode<'sql> for Expr<'sql> {
                 };
                 if !matches!(
                     child.rule(),
-                    "Number" | "String" | "Null" | "True" | "False" | "Name" | "Expr"
+                    "Number"
+                        | "String"
+                        | "Null"
+                        | "True"
+                        | "False"
+                        | "Name"
+                        | "FunctionCall"
+                        | "Expr"
                 ) {
                     return Err(error(child, "primary expression"));
                 }
@@ -541,6 +565,50 @@ impl<'sql> ParseNode<'sql> for Expr<'sql> {
                     left
                 }
             }
+            "ProjectionItem" => {
+                let expr = Self::parse(c.take("Expr")?)?;
+                if let Some(alias) = c.optional("Identifier")? {
+                    Self::Alias {
+                        expr: Box::new(expr),
+                        alias: identifier(alias)?,
+                    }
+                } else {
+                    expr
+                }
+            }
+            "FunctionCall" => {
+                let name = identifier(c.take("Identifier")?)?;
+                let distinct = if let Some(d) = c.optional("Distinct")? {
+                    token(d, &["DISTINCT"])?;
+                    true
+                } else {
+                    false
+                };
+                let args = if let Some(a) = c.optional("Arguments")? {
+                    if a.children().first().is_some_and(|n| n.rule() == "Star") {
+                        vec![Self::parse(only(a, "Star")?)?]
+                    } else {
+                        expressions(a)?
+                    }
+                } else {
+                    Vec::new()
+                };
+                let filter = c
+                    .optional("CallFilter")?
+                    .map(|n| Self::parse(only(n, "Expr")?).map(Box::new))
+                    .transpose()?;
+                let over = c
+                    .optional("Over")?
+                    .map(|n| WindowSpec::parse(only(n, "WindowSpec")?).map(Box::new))
+                    .transpose()?;
+                Self::FunctionCall {
+                    name,
+                    args,
+                    distinct,
+                    filter,
+                    over,
+                }
+            }
             "Name" => {
                 let first = identifier(c.take("Identifier")?)?;
                 if let Some(second) = c.optional("Identifier")? {
@@ -587,6 +655,155 @@ fn binary_op(n: &Node<'_>) -> Result<BinaryOp> {
         _ => return Err(error(n, "binary operator")),
     };
     Ok(ops[token(n, tokens)?])
+}
+
+fn orderings<'s>(n: &Node<'s>) -> Result<Vec<OrderByExpr<'s>>> {
+    let mut c = Children::new(n);
+    let mut result = vec![OrderByExpr::parse(c.take("OrderByExpr")?)?];
+    while !c.rest.is_empty() {
+        result.push(OrderByExpr::parse(c.take("OrderByExpr")?)?);
+    }
+    Ok(result)
+}
+impl<'sql> ParseNode<'sql> for OrderByExpr<'sql> {
+    fn parse(n: &Node<'sql>) -> Result<Self> {
+        if n.rule() != "OrderByExpr" {
+            return Err(error(n, "OrderByExpr"));
+        }
+        let mut c = Children::new(n);
+        let expr = Expr::parse(c.take("Expr")?)?;
+        let direction = c
+            .optional("SortDirection")?
+            .map(SortDirection::parse)
+            .transpose()?
+            .unwrap_or(SortDirection::Ascending);
+        let nulls = c.optional("NullOrder")?.map(NullOrder::parse).transpose()?;
+        c.finish()?;
+        Ok(Self {
+            expr,
+            direction,
+            nulls,
+        })
+    }
+}
+impl<'sql> ParseNode<'sql> for SortDirection {
+    fn parse(n: &Node<'sql>) -> Result<Self> {
+        if n.rule() != "SortDirection" {
+            return Err(error(n, "SortDirection"));
+        }
+        Ok(if token(n, &["ASC", "DESC"])? == 0 {
+            Self::Ascending
+        } else {
+            Self::Descending
+        })
+    }
+}
+impl<'sql> ParseNode<'sql> for NullOrder {
+    fn parse(n: &Node<'sql>) -> Result<Self> {
+        if n.rule() != "NullOrder" {
+            return Err(error(n, "NullOrder"));
+        }
+        leaf(n)?;
+        if keyword_sequence(n, &["NULLS", "FIRST"]).is_ok() {
+            Ok(Self::First)
+        } else {
+            keyword_sequence(n, &["NULLS", "LAST"])?;
+            Ok(Self::Last)
+        }
+    }
+}
+impl<'sql> ParseNode<'sql> for WindowSpec<'sql> {
+    fn parse(n: &Node<'sql>) -> Result<Self> {
+        if n.rule() != "WindowSpec" {
+            return Err(error(n, "WindowSpec"));
+        }
+        let mut c = Children::new(n);
+        let partition_by = c
+            .optional("PartitionBy")?
+            .map(expressions)
+            .transpose()?
+            .unwrap_or_default();
+        let order_by = c
+            .optional("OrderBy")?
+            .map(orderings)
+            .transpose()?
+            .unwrap_or_default();
+        let frame = c
+            .optional("WindowFrame")?
+            .map(WindowFrame::parse)
+            .transpose()?;
+        c.finish()?;
+        Ok(Self {
+            partition_by,
+            order_by,
+            frame,
+        })
+    }
+}
+impl<'sql> ParseNode<'sql> for FrameUnits {
+    fn parse(n: &Node<'sql>) -> Result<Self> {
+        if n.rule() != "FrameUnits" {
+            return Err(error(n, "FrameUnits"));
+        }
+        Ok(if token(n, &["ROWS", "RANGE"])? == 0 {
+            Self::Rows
+        } else {
+            Self::Range
+        })
+    }
+}
+impl<'sql> ParseNode<'sql> for WindowFrame<'sql> {
+    fn parse(n: &Node<'sql>) -> Result<Self> {
+        if n.rule() != "WindowFrame" {
+            return Err(error(n, "WindowFrame"));
+        }
+        let mut c = Children::new(n);
+        let units = FrameUnits::parse(c.take("FrameUnits")?)?;
+        let (start, end) = if let Some(b) = c.optional("Between")? {
+            let mut b = Children::new(b);
+            let start = FrameBound::parse(b.take("FrameBound")?)?;
+            let end = FrameBound::parse(b.take("FrameBound")?)?;
+            b.finish()?;
+            (start, end)
+        } else {
+            (
+                FrameBound::parse(c.take("FrameBound")?)?,
+                FrameBound::CurrentRow,
+            )
+        };
+        c.finish()?;
+        Ok(Self { units, start, end })
+    }
+}
+impl<'sql> ParseNode<'sql> for FrameBound<'sql> {
+    fn parse(n: &Node<'sql>) -> Result<Self> {
+        if n.rule() != "FrameBound" {
+            return Err(error(n, "FrameBound"));
+        }
+        let [bound] = n.children() else {
+            return Err(error(n, "one frame bound"));
+        };
+        let (value, words): (Self, &[&str]) = match bound.rule() {
+            "UnboundedPreceding" => (Self::UnboundedPreceding, &["UNBOUNDED", "PRECEDING"]),
+            "UnboundedFollowing" => (Self::UnboundedFollowing, &["UNBOUNDED", "FOLLOWING"]),
+            "CurrentRow" => (Self::CurrentRow, &["CURRENT", "ROW"]),
+            "Preceding" | "Following" => {
+                let offset = leaf(only(bound, "Offset")?)?;
+                if offset.is_empty() || !offset.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(error(bound, "unsigned decimal offset"));
+                }
+                return Ok(if bound.rule() == "Preceding" {
+                    Self::Preceding(offset)
+                } else {
+                    Self::Following(offset)
+                });
+            }
+            _ => return Err(error(bound, "frame bound")),
+        };
+        leaf(bound)?;
+        keyword_sequence(bound, words)?;
+        Ok(value)
+    }
 }
 
 #[cfg(test)]
@@ -678,9 +895,18 @@ mod tests {
             "Multiplicative",
             "Unary",
             "Name",
+            "FunctionCall",
+            "ProjectionItem",
         ] {
             assert!(Expr::parse(&node(rule, "")).is_err(), "{rule}");
         }
+        assert!(OrderByExpr::parse(&node("OrderByExpr", "")).is_err());
+        assert!(WindowFrame::parse(&node("WindowFrame", "")).is_err());
+        assert!(FrameBound::parse(&node("FrameBound", "")).is_err());
+        assert!(FrameUnits::parse(&node("FrameUnits", "GROUPS")).is_err());
+        assert!(NullOrder::parse(&node("NullOrder", "NULLS MIDDLE")).is_err());
+        assert!(SortDirection::parse(&node("SortDirection", "SIDEWAYS")).is_err());
+        assert!(WindowSpec::parse(&node("Wrong", "")).is_err());
         assert!(ColumnDef::parse(&node("ColumnDef", "")).is_err());
         assert!(Assignment::parse(&node("Assignment", "")).is_err());
         assert!(DataType::parse(&node("DataType", "")).is_err());
@@ -697,6 +923,12 @@ mod tests {
             ("DELETE FROM t", "Delete"),
             ("BEGIN", "Begin"),
             ("SELECT a IS NULL", "IsNull"),
+            ("SELECT sum(x) AS y", "ProjectionItem"),
+            ("SELECT sum(x)", "FunctionCall"),
+            ("SELECT sum(x) OVER ()", "WindowSpec"),
+            ("SELECT x ORDER BY y", "OrderByExpr"),
+            ("SELECT sum(x) OVER (ROWS 1 PRECEDING)", "WindowFrame"),
+            ("SELECT sum(x) OVER (ROWS 1 PRECEDING)", "FrameBound"),
         ] {
             let tree = crate::grammar::parse(sql).unwrap();
             let tree = rewrite(&tree, sql, rule, &|n, mut children| {

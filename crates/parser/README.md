@@ -38,7 +38,8 @@ assert!(matches!(from, Some(Cow::Owned(name)) if name == "items"));
 
 ## Supported SQL
 
-- `SELECT expr, ... [FROM table] [WHERE expr]`, or `SELECT * ...`.
+- `SELECT expr [AS alias], ... [FROM table] [WHERE expr] [GROUP BY expr, ...]
+  [HAVING expr] [ORDER BY expr [ASC|DESC] [NULLS FIRST|LAST], ...]`, or `SELECT * ...`.
 - `CREATE TABLE name (column type [constraint ...], ...)`.
   Column constraints: NOT NULL, PRIMARY KEY, UNIQUE, in any order, including repeats.
   Types: INT/INTEGER, BIGINT, TEXT, BOOL/BOOLEAN, REAL, DOUBLE, VARCHAR[(length)].
@@ -51,7 +52,18 @@ Expressions, from low to high precedence: OR, AND, prefix NOT, one comparison
 (`=`, `<>`, `!=`, `<`, `<=`, `>`, `>=`, `IS [NOT] NULL`), `+ -`, `* / %`,
 prefix `+ -`, parentheses/literals/names. Arithmetic and boolean binary operators
 associate left; prefix operators associate right. Names can be `table.column`.
-Wildcard is allowed only as the complete SELECT projection.
+Generic function calls accept empty arguments, expression lists, or a standalone
+`*`, optionally preceded by DISTINCT. Calls may have `FILTER (WHERE expr)` followed
+by `OVER ([PARTITION BY expr, ...] [ORDER BY ...] [frame])`. Function names are
+ordinary identifiers; binding validates function names and arguments. Wildcard is
+otherwise allowed only as the complete SELECT projection. Aliases require explicit
+AS and are restricted to projection items.
+
+Frames use ROWS or RANGE with a bound or BETWEEN bound AND bound. Bounds are
+UNBOUNDED PRECEDING/FOLLOWING, CURRENT ROW, or unsigned decimal offsets followed
+by PRECEDING/FOLLOWING. Offset spelling borrows input. Short frames normalize the
+end to CURRENT ROW; omitted frames remain absent for binding to interpret. Ordering
+defaults to ascending, while omitted null placement remains absent.
 
 Numbers retain exact spelling (including decimal/exponent forms); signs are
 unary operators, not part of numeric literals. Strings use single quotes with
@@ -67,8 +79,8 @@ newlines, `--` line comments and non-nested `/* ... */` comments are trivia.
 
 ## Limits
 
-The grammar is not PostgreSQL-compatible: no joins, subqueries, aliases, functions,
-ORDER BY/LIMIT, GROUP BY, set operations, schema-qualified table names, table
+The grammar is not PostgreSQL-compatible: no joins, subqueries, implicit or table aliases,
+LIMIT, named windows, GROUPS/EXCLUDE frames, set operations, schema-qualified table names, table
 constraints, defaults, parameter placeholders, casts, or nested block comments.
 Parsing performs no execution, binding, catalog lookup, type checking, row-width
 validation, duplicate-name checking, or constraint consistency checking. VARCHAR
@@ -83,7 +95,7 @@ The public `ParseNode<'sql>` trait converts a borrowed `&Node<'sql>` into an AST
 value with `parse`, returning `ParseError` on invalid nodes. `Statement::parse`
 accepts either a `Statement` wrapper or a concrete statement node. `Expr::parse`
 similarly accepts an `Expr` wrapper or a concrete expression node. Column
-definitions, assignments, data types, constraints, and literals also implement
+definitions, assignments, data types, constraints, literals, ordering types, window specifications, and frame types also implement
 `ParseNode`. Import the trait to call these methods.
 
 ```rust

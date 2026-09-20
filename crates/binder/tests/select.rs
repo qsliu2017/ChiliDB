@@ -403,3 +403,231 @@ fn operator_grouping_and_nullability_survive_binding() {
         }
     ));
 }
+
+#[test]
+fn aggregate_signatures_coercions_and_alias_ordering() {
+    use bound::{AggregateFunction as A, ExprKind as K};
+    let catalog = TestCatalog::default();
+    let binder = Binder::new(&catalog);
+    let q = select(
+        &binder,
+        "SELECT count(*) AS n, sum(qty), avg(id), min(name), max(flag), sum(small), min(NULL) FROM t ORDER BY n DESC, 2",
+    );
+    assert!(q.is_aggregate);
+    assert_eq!(q.projection[0].name, "n");
+    assert_eq!(q.order_by[0].expr, q.projection[0].expr);
+    assert_eq!(q.order_by[0].nulls, bound::NullOrder::First);
+    assert_eq!(q.order_by[1].expr, q.projection[1].expr);
+    assert_eq!(q.order_by[1].nulls, bound::NullOrder::Last);
+    for (i, (fun, ty, nullable)) in [
+        (A::Count, LogicalType::Int64, false),
+        (A::Sum, LogicalType::Int64, true),
+        (A::Avg, LogicalType::Float64, true),
+        (A::Min, LogicalType::Text, true),
+        (A::Max, LogicalType::Boolean, true),
+        (A::Sum, LogicalType::Float64, true),
+        (A::Min, LogicalType::Text, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let expr = &q.projection[i].expr;
+        assert_eq!(expr.data_type, ty);
+        assert_eq!(expr.nullable, nullable);
+        let K::Aggregate(a) = &expr.kind else {
+            panic!()
+        };
+        assert_eq!(a.function, fun);
+        assert_eq!(a.args.len(), usize::from(i != 0));
+    }
+    let q = select(
+        &binder,
+        "SELECT count(DISTINCT name) FILTER (WHERE flag) FROM t",
+    );
+    let K::Aggregate(a) = &q.projection[0].expr.kind else {
+        panic!()
+    };
+    assert!(a.distinct && a.filter.is_some());
+}
+
+#[test]
+fn grouping_is_structural_and_reaches_window_inputs() {
+    let catalog = TestCatalog::default();
+    let binder = Binder::new(&catalog);
+    for sql in [
+        "SELECT t.id + 1, sum(qty) FROM t GROUP BY id",
+        "SELECT id + 1 FROM t GROUP BY t.id + 1",
+        "SELECT 1 HAVING count(*) > 0",
+        "SELECT 1 HAVING true",
+        "SELECT sum(sum(qty)) OVER () FROM t",
+        "SELECT rank() OVER (ORDER BY sum(qty)) FROM t",
+        "SELECT row_number() OVER (PARTITION BY id ORDER BY sum(qty)) FROM t GROUP BY id",
+        "SELECT * FROM t GROUP BY id, qty, price, name, flag, small",
+        "SELECT 1 FROM t ORDER BY count(*)",
+    ] {
+        assert!(select(&binder, sql).is_aggregate, "{sql}");
+    }
+    for sql in [
+        "SELECT id, sum(qty) FROM t",
+        "SELECT id FROM t GROUP BY id + 1",
+        "SELECT id FROM t HAVING true",
+        "SELECT * FROM t GROUP BY id",
+        "SELECT sum(qty) OVER () FROM t GROUP BY id",
+        "SELECT count(*) FROM t ORDER BY id",
+        "SELECT row_number() OVER (PARTITION BY qty) FROM t GROUP BY id",
+        "SELECT row_number() OVER (ORDER BY qty) FROM t GROUP BY id",
+    ] {
+        assert_eq!(error(&binder, sql), BindError::UngroupedColumn, "{sql}");
+    }
+    assert!(
+        !select(
+            &binder,
+            "SELECT sum(qty) OVER (), row_number() OVER () FROM t"
+        )
+        .is_aggregate
+    );
+}
+
+#[test]
+fn invalid_function_contexts_and_signatures_are_errors() {
+    let catalog = TestCatalog::default();
+    let binder = Binder::new(&catalog);
+    for sql in [
+        "SELECT count()",
+        "SELECT sum(*)",
+        "SELECT count(DISTINCT *)",
+        "SELECT sum(1, 2)",
+        "SELECT row_number()",
+        "SELECT rank(1) OVER ()",
+        "SELECT rank() FILTER (WHERE true) OVER ()",
+        "SELECT count(DISTINCT id) OVER () FROM t",
+        "SELECT sum(count(*)) FROM t",
+        "SELECT count(*) FILTER (WHERE count(*) > 0)",
+        "SELECT id FROM t WHERE count(*) > 0",
+        "SELECT id FROM t GROUP BY sum(id)",
+        "SELECT 1 HAVING row_number() OVER () > 0",
+        "SELECT sum(row_number() OVER ()) OVER ()",
+        "SELECT row_number() OVER (ORDER BY rank() OVER ())",
+        "SELECT sum(row_number() OVER ())",
+        "UPDATE t SET id = count(*)",
+        "DELETE FROM t WHERE rank() OVER () = 1",
+        "INSERT INTO t (id) VALUES (count(*))",
+    ] {
+        assert!(
+            matches!(error(&binder, sql), BindError::InvalidFunction(_)),
+            "{sql}"
+        );
+    }
+    for sql in ["SELECT mystery(1)", "SELECT \"COUNT\"(*)"] {
+        assert!(matches!(error(&binder, sql), BindError::UnknownFunction(_)));
+    }
+    assert!(matches!(
+        error(&binder, "SELECT sum(name) FROM t"),
+        BindError::TypeMismatch { .. }
+    ));
+    assert!(matches!(
+        error(&binder, "SELECT count(*) FILTER (WHERE 1)"),
+        BindError::TypeMismatch { .. }
+    ));
+}
+
+#[test]
+fn windows_resolve_defaults_and_validate_frames() {
+    use bound::{ExprKind as K, FrameBound as B, FrameUnits as U};
+    let catalog = TestCatalog::default();
+    let binder = Binder::new(&catalog);
+    for (sql, units, start, end) in [
+        (
+            "SELECT rank() OVER ()",
+            U::Range,
+            B::UnboundedPreceding,
+            B::UnboundedFollowing,
+        ),
+        (
+            "SELECT rank() OVER (ORDER BY 1)",
+            U::Range,
+            B::UnboundedPreceding,
+            B::CurrentRow,
+        ),
+        (
+            "SELECT sum(1) OVER (ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING)",
+            U::Rows,
+            B::Preceding(2),
+            B::Following(1),
+        ),
+        (
+            "SELECT sum(1) OVER (ROWS BETWEEN 0 PRECEDING AND CURRENT ROW)",
+            U::Rows,
+            B::Preceding(0),
+            B::CurrentRow,
+        ),
+    ] {
+        let q = select(&binder, sql);
+        let K::Window(w) = &q.projection[0].expr.kind else {
+            panic!()
+        };
+        assert_eq!(w.frame, bound::WindowFrame { units, start, end });
+    }
+    for frame in [
+        "ROWS BETWEEN CURRENT ROW AND 0 PRECEDING",
+        "ROWS BETWEEN 0 FOLLOWING AND CURRENT ROW",
+        "ROWS BETWEEN 0 FOLLOWING AND 0 PRECEDING",
+        "ROWS BETWEEN UNBOUNDED FOLLOWING AND UNBOUNDED FOLLOWING",
+        "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED PRECEDING",
+        "RANGE BETWEEN 1 PRECEDING AND CURRENT ROW",
+        "ROWS BETWEEN 18446744073709551616 PRECEDING AND CURRENT ROW",
+    ] {
+        let sql = format!("SELECT sum(1) OVER ({frame})");
+        assert!(
+            matches!(error(&binder, &sql), BindError::InvalidWindowFrame(_)),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn manual_window_trees_preserve_depth_and_offset_validation() {
+    use chilidb_parser::{Expr, FrameBound, Statement};
+    let catalog = TestCatalog::default();
+    let binder = Binder::new(&catalog);
+    let mut parsed = parse_sql("SELECT row_number() OVER (PARTITION BY 1)").unwrap();
+    let Statement::Select { projection, .. } = &mut parsed[0] else {
+        panic!()
+    };
+    let Expr::FunctionCall {
+        over: Some(over), ..
+    } = &mut projection[0]
+    else {
+        panic!()
+    };
+    let mut nested = over.partition_by.remove(0);
+    for _ in 0..256 {
+        nested = Expr::Unary {
+            op: UnaryOp::Plus,
+            expr: Box::new(nested),
+        };
+    }
+    over.partition_by.push(nested);
+    assert_eq!(
+        binder.bind(&parsed[0]).unwrap_err(),
+        BindError::ExpressionTooDeep
+    );
+
+    for offset in ["", "-1", "+1", "1.5", "1e2", " 2"] {
+        let mut parsed = parse_sql("SELECT sum(1) OVER (ROWS 1 PRECEDING)").unwrap();
+        let Statement::Select { projection, .. } = &mut parsed[0] else {
+            panic!()
+        };
+        let Expr::FunctionCall {
+            over: Some(over), ..
+        } = &mut projection[0]
+        else {
+            panic!()
+        };
+        over.frame.as_mut().unwrap().start = FrameBound::Preceding(offset);
+        assert!(matches!(
+            binder.bind(&parsed[0]),
+            Err(BindError::InvalidWindowFrame(_))
+        ));
+    }
+}

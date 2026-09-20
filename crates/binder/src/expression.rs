@@ -7,18 +7,41 @@ pub(crate) fn bind_expr<'sql, E>(
     expr: &Expr<'sql>,
     context: &BindContext<'sql>,
 ) -> Result<bound::Expr<'sql>, BindError<E>> {
-    bind_expr_inner(expr, context, 0)
+    bind_expr_inner(expr, context, 0, false, false)
 }
 
-fn bind_expr_inner<'sql, E>(
+pub(crate) fn bind_expr_inner<'sql, E>(
     expr: &Expr<'sql>,
     context: &BindContext<'sql>,
     depth: usize,
+    aggregates: bool,
+    windows: bool,
 ) -> Result<bound::Expr<'sql>, BindError<E>> {
     if depth >= 256 {
         return Err(BindError::ExpressionTooDeep);
     }
     match expr {
+        Expr::Alias { .. } => Err(BindError::InvalidStatement(
+            "alias only allowed on projection",
+        )),
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+            filter,
+            over,
+        } => crate::aggregate::bind_call(
+            name,
+            args,
+            *distinct,
+            filter.as_deref(),
+            over.as_deref(),
+            context,
+            depth,
+            aggregates,
+            windows,
+        ),
+
         Expr::Identifier(name) => context.resolve_column::<E>(None, name),
         Expr::QualifiedIdentifier { table, column } => {
             context.resolve_column::<E>(Some(table), column)
@@ -38,7 +61,7 @@ fn bind_expr_inner<'sql, E>(
             {
                 return number(s, true);
             }
-            let expr = bind_expr_inner(expr, context, depth + 1)?;
+            let expr = bind_expr_inner(expr, context, depth + 1, aggregates, windows)?;
             let expr = match op {
                 UnaryOp::Not => boolean(expr, "NOT")?,
                 UnaryOp::Plus | UnaryOp::Minus => {
@@ -65,8 +88,8 @@ fn bind_expr_inner<'sql, E>(
             })
         }
         Expr::Binary { left, op, right } => {
-            let left = bind_expr_inner(left, context, depth + 1)?;
-            let right = bind_expr_inner(right, context, depth + 1)?;
+            let left = bind_expr_inner(left, context, depth + 1, aggregates, windows)?;
+            let right = bind_expr_inner(right, context, depth + 1, aggregates, windows)?;
             let (left, right, data_type) =
                 match op {
                     BinaryOp::And | BinaryOp::Or => (
@@ -118,7 +141,13 @@ fn bind_expr_inner<'sql, E>(
             data_type: T::Boolean,
             nullable: false,
             kind: bound::ExprKind::IsNull {
-                expr: Box::new(bind_expr_inner(expr, context, depth + 1)?),
+                expr: Box::new(bind_expr_inner(
+                    expr,
+                    context,
+                    depth + 1,
+                    aggregates,
+                    windows,
+                )?),
                 negated: *negated,
             },
         }),
@@ -169,7 +198,7 @@ fn value(data_type: T, scalar: Scalar<'_>) -> bound::Expr<'_> {
     }
 }
 
-fn cast(expr: bound::Expr<'_>, target: T) -> bound::Expr<'_> {
+pub(crate) fn cast(expr: bound::Expr<'_>, target: T) -> bound::Expr<'_> {
     if expr.data_type == target {
         return expr;
     }
@@ -186,7 +215,11 @@ fn numeric(t: &T) -> bool {
     matches!(t, T::Int32 | T::Int64 | T::Uint32 | T::Float32 | T::Float64)
 }
 
-fn require_numeric<E>(t: &T, integral: bool, context: &'static str) -> Result<(), BindError<E>> {
+pub(crate) fn require_numeric<E>(
+    t: &T,
+    integral: bool,
+    context: &'static str,
+) -> Result<(), BindError<E>> {
     if *t == T::Null || (numeric(t) && (!integral || matches!(t, T::Int32 | T::Int64 | T::Uint32)))
     {
         Ok(())

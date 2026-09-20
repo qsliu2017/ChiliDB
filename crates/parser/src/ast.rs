@@ -14,6 +14,12 @@ pub enum Statement<'sql> {
         from: Option<Cow<'sql, str>>,
         /// The optional `WHERE` expression.
         filter: Option<Expr<'sql>>,
+        /// Grouping expressions in source order.
+        group_by: Vec<Expr<'sql>>,
+        /// Predicate applied to grouped results.
+        having: Option<Expr<'sql>>,
+        /// Result ordering in source order.
+        order_by: Vec<OrderByExpr<'sql>>,
     },
     /// A table declaration with column-level constraints.
     CreateTable {
@@ -47,11 +53,8 @@ pub enum Statement<'sql> {
         /// The optional `WHERE` expression.
         filter: Option<Expr<'sql>>,
     },
-    /// The `BEGIN` transaction command.
     Begin,
-    /// The `COMMIT` transaction command.
     Commit,
-    /// The `ROLLBACK` transaction command.
     Rollback,
 }
 
@@ -60,7 +63,6 @@ pub enum Statement<'sql> {
 pub struct ColumnDef<'sql> {
     /// The column name, folded if bare or unescaped if quoted.
     pub name: Cow<'sql, str>,
-    /// The declared SQL type.
     pub data_type: DataType<'sql>,
     /// Constraints in source order, without consistency or duplicate checks.
     pub constraints: Vec<ColumnConstraint>,
@@ -71,15 +73,11 @@ pub struct ColumnDef<'sql> {
 pub enum DataType<'sql> {
     /// `INT` or `INTEGER`.
     Integer,
-    /// `BIGINT`.
     BigInt,
-    /// `TEXT`.
     Text,
     /// `BOOL` or `BOOLEAN`.
     Boolean,
-    /// `REAL`.
     Real,
-    /// `DOUBLE`.
     Double,
     /// `VARCHAR` with an optional decimal length, preserved without range checks.
     Varchar(
@@ -91,11 +89,8 @@ pub enum DataType<'sql> {
 /// A column-level constraint declaration; parsing does not enforce constraints.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ColumnConstraint {
-    /// `NOT NULL`.
     NotNull,
-    /// `PRIMARY KEY`.
     PrimaryKey,
-    /// `UNIQUE`.
     Unique,
 }
 
@@ -104,7 +99,6 @@ pub enum ColumnConstraint {
 pub struct Assignment<'sql> {
     /// The unqualified target column name.
     pub column: Cow<'sql, str>,
-    /// The assigned expression.
     pub value: Expr<'sql>,
 }
 
@@ -118,43 +112,43 @@ pub struct Assignment<'sql> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr<'sql> {
     /// An unqualified name, ASCII-folded if bare and case-preserving if quoted.
-    Identifier(
-        /// The folded or unescaped name.
-        Cow<'sql, str>,
-    ),
+    Identifier(Cow<'sql, str>),
     /// A two-part `table.column` name, without name resolution.
     QualifiedIdentifier {
-        /// The table qualifier.
         table: Cow<'sql, str>,
-        /// The column name.
         column: Cow<'sql, str>,
     },
-    /// `*`, accepted only as the complete `SELECT` projection.
+    /// An explicit projection alias.
+    Alias {
+        expr: Box<Expr<'sql>>,
+        alias: Cow<'sql, str>,
+    },
+    /// An unresolved function call; argument validity is checked by binding.
+    FunctionCall {
+        /// Unqualified function name.
+        name: Cow<'sql, str>,
+        /// Arguments, including a standalone wildcard when written.
+        args: Vec<Expr<'sql>>,
+        distinct: bool,
+        /// Optional aggregate input predicate.
+        filter: Option<Box<Expr<'sql>>>,
+        /// Optional inline window specification.
+        over: Option<Box<WindowSpec<'sql>>>,
+    },
+    /// `*`, accepted as the complete projection or standalone call argument.
     Wildcard,
-    /// A literal value without type inference.
-    Literal(
-        /// The literal's syntax value.
-        Literal<'sql>,
-    ),
-    /// A prefix operator and its operand.
+    Literal(Literal<'sql>),
     Unary {
-        /// The prefix operator.
         op: UnaryOp,
-        /// The operand.
         expr: Box<Expr<'sql>>,
     },
-    /// A binary operator and its operands.
     Binary {
-        /// The left operand.
         left: Box<Expr<'sql>>,
-        /// The binary operator.
         op: BinaryOp,
-        /// The right operand.
         right: Box<Expr<'sql>>,
     },
     /// An `IS NULL` or `IS NOT NULL` predicate.
     IsNull {
-        /// The tested expression.
         expr: Box<Expr<'sql>>,
         /// Whether the predicate contains `NOT`.
         negated: bool,
@@ -165,62 +159,92 @@ pub enum Expr<'sql> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Literal<'sql> {
     /// A decimal or exponent-form number; a leading sign is a unary operator.
-    Number(
-        /// The original numeric token.
-        &'sql str,
-    ),
+    Number(&'sql str),
     /// A single-quoted string with delimiters removed and doubled quotes unescaped.
     String(
         /// Borrowed text unless unescaping requires allocation.
         Cow<'sql, str>,
     ),
-    /// `NULL`.
     Null,
-    /// `TRUE` or `FALSE`.
-    Boolean(
-        /// Whether the token is `TRUE`.
-        bool,
-    ),
+    Boolean(bool),
 }
 
 /// A prefix operator; see [`Expr`] for precedence and associativity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOp {
-    /// Logical `NOT`.
     Not,
-    /// Unary `+`.
     Plus,
-    /// Unary `-`.
     Minus,
 }
 
 /// A binary operator; see [`Expr`] for precedence and associativity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryOp {
-    /// Logical `OR`.
     Or,
-    /// Logical `AND`.
     And,
-    /// Equality (`=`).
     Eq,
     /// Inequality (`<>` or `!=`).
     NotEq,
-    /// Less than (`<`).
     Less,
-    /// Less than or equal (`<=`).
     LessEq,
-    /// Greater than (`>`).
     Greater,
-    /// Greater than or equal (`>=`).
     GreaterEq,
-    /// Addition (`+`).
     Add,
-    /// Subtraction (`-`).
     Subtract,
-    /// Multiplication (`*`).
     Multiply,
-    /// Division (`/`).
     Divide,
-    /// Modulo (`%`).
     Modulo,
+}
+
+/// One ordering expression; omitted direction defaults to ascending.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrderByExpr<'sql> {
+    pub expr: Expr<'sql>,
+    pub direction: SortDirection,
+    pub nulls: Option<NullOrder>,
+}
+/// Sort direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+/// Explicit null placement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NullOrder {
+    First,
+    Last,
+}
+/// An inline window specification, without implicit frame interpretation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowSpec<'sql> {
+    pub partition_by: Vec<Expr<'sql>>,
+    pub order_by: Vec<OrderByExpr<'sql>>,
+    pub frame: Option<WindowFrame<'sql>>,
+}
+/// An explicit frame; short forms end at CURRENT ROW.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowFrame<'sql> {
+    pub units: FrameUnits,
+    /// Inclusive start bound.
+    pub start: FrameBound<'sql>,
+    /// Inclusive end bound.
+    pub end: FrameBound<'sql>,
+}
+/// Frame measurement units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameUnits {
+    /// Physical rows.
+    Rows,
+    /// Ordering range.
+    Range,
+}
+/// Frame bound; offsets retain unsigned decimal spelling without range checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FrameBound<'sql> {
+    UnboundedPreceding,
+    Preceding(&'sql str),
+    CurrentRow,
+    Following(&'sql str),
+    UnboundedFollowing,
 }

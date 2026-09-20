@@ -111,7 +111,7 @@ Their schema and column ordering must remain stable for the bound query.
 uses the nearest scope with a match; qualified lookup stops at the nearest scope
 containing the qualifier. Duplicate matches are ambiguous. Each relation has a
 query-local `RelationId`; columns use zero-based source-schema indices, not
-physical tuple offsets. The SQL parser exposes one source table and no aliases
+physical tuple offsets. The SQL parser exposes one source table and no table aliases
 or nested queries; scope lookup also supports manually assembled nested contexts.
 
 ## Ownership
@@ -122,3 +122,46 @@ The AST borrows SQL text, not the parsed AST. Borrowed strings remain borrowed;
 already-owned parser strings are cloned when retained in the bound AST. Wildcard
 output names are copied from catalog metadata. Tree structures allocate vectors
 and boxes. Table-containing structures do not define equality for opaque sources.
+
+## Grouping, aggregates, and windows
+
+SELECT supports GROUP BY, HAVING, ORDER BY, and explicit output `AS` aliases.
+ORDER BY resolves standalone output names (ambiguous names are errors) and positive
+integer output ordinals before source columns. GROUP BY uses source expressions,
+not output aliases or ordinals. Alias references inside compound ORDER BY
+expressions are not supported. ASC defaults to NULLS LAST; DESC to NULLS FIRST.
+
+Built-ins are COUNT, SUM, AVG, MIN, MAX, ROW_NUMBER, RANK, and DENSE_RANK.
+Bare names are normalized by the parser; quoted names remain case-sensitive.
+Unknown functions are errors; scalar functions and UDF lookup are not supported.
+COUNT(*) has no bound arguments and returns non-nullable Int64; COUNT() is an
+error. COUNT(expr) accepts any type. SUM widens integers to Int64 and floats to
+Float64; AVG coerces numeric inputs to Float64. MIN/MAX retain their operand type
+(NULL becomes Text). Aggregates other than COUNT have nullable results. DISTINCT
+and Boolean FILTER predicates are supported on plain aggregates, except
+COUNT(DISTINCT *). Plain aggregate inputs and FILTER prohibit aggregates and windows.
+
+GROUP BY, any plain aggregate (including inside window arguments/order/partition),
+or HAVING activates grouping. Grouped outputs, HAVING, ordering, and window inputs
+must consist of structurally equal bound grouping keys, literals, and aggregates.
+Column equality uses resolved relation/column bindings, not SQL spelling. Wildcard
+expansion obeys the same grouping rules. WHERE, GROUP BY, and DML expressions
+prohibit aggregates and windows. HAVING prohibits windows.
+
+Ranking functions require OVER and accept no arguments, DISTINCT, or FILTER.
+Aggregate functions also support OVER, but window DISTINCT is unsupported. A
+window alone does not activate grouping. Window arguments/partition/order may
+contain plain aggregates, e.g. `SUM(SUM(x)) OVER ()`, but windows cannot nest.
+Window FILTER may also contain plain aggregates and activate grouping, but never
+windows. Ranking results are non-nullable
+Int64. Ranking frames are retained in the bound AST but do not affect ranking.
+
+Omitted frames default to RANGE UNBOUNDED PRECEDING through CURRENT ROW with
+ordering, and through UNBOUNDED FOLLOWING without ordering. ROWS offsets must fit
+u64; RANGE supports only current/unbounded boundaries. Boundary categories must
+follow UNBOUNDED PRECEDING, PRECEDING, CURRENT ROW, FOLLOWING, UNBOUNDED FOLLOWING
+order, with no unbounded-following start or unbounded-preceding end. Reversed
+offsets within the same category are permitted and may yield empty frames. Zero
+offsets retain their syntactic category: CURRENT ROW through 0 PRECEDING and
+0 FOLLOWING through CURRENT ROW are rejected.
+These representations specify semantics without executing grouping or windows.

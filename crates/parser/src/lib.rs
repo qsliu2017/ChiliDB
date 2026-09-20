@@ -11,7 +11,8 @@ pub use grammar::ParseError;
 /// Conversion from a named PEG node to an AST value borrowing SQL, not the tree.
 ///
 /// Implemented for statements, expressions, column definitions, assignments,
-/// data types, constraints, and literals. Import this trait to call `parse`.
+/// data types, constraints, literals, ordering, windows, and frames.
+/// Import this trait to call `parse`.
 /// Statement and expression conversion accept either their grammar wrapper or
 /// a concrete node of the corresponding kind.
 ///

@@ -6,6 +6,7 @@ pub mod context;
 pub mod error;
 pub mod types;
 
+mod aggregate;
 mod binding;
 mod ddl;
 mod dml;

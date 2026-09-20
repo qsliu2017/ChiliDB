@@ -70,6 +70,10 @@ fn binder_uses_a_source_handle_without_catalog_id_parameters() {
             expr,
         }],
         filter: None,
+        group_by: vec![],
+        having: None,
+        order_by: vec![],
+        is_aggregate: false,
     });
     let bound::Statement::Select(query) = statement.clone() else {
         panic!("expected SELECT")
