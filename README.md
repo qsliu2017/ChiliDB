@@ -4,11 +4,11 @@ A small OLTP database in Rust with independently replaceable layers.
 
 ## Extensibility
 
-[Apache DataFusion](https://datafusion.apache.org/) is a reference for ChiliDB's
-extensible architecture: trait-based catalog and table providers, explicit
-logical and physical plan interfaces, and composable optimizer rules. ChiliDB
-applies these principles to independently replaceable OLTP components; it does
-not aim for DataFusion API compatibility or adopt its analytical execution model.
+ChiliDB uses [Apache DataFusion](https://datafusion.apache.org/)'s native logical
+plans and expression types at the optimizer boundary. ChiliDB retains its parser,
+binder, catalog abstraction, and ModifyTable extension; physical planning, execution,
+and storage remain independent. DataFusion's optimizer can supply selected rules
+without adopting its execution engine.
 
 ## SQL frontend
 
@@ -23,14 +23,33 @@ demo catalog:
 cargo run --example bind -- 'SELECT id + 1 FROM items WHERE id > 0'
 ```
 
-Neither example executes the query.
+Aggregates and windows also produce typed bound expressions:
+
+```sh
+cargo run --example bind -- 'SELECT SUM(id), COUNT(*) FROM items'
+cargo run --example bind -- 'SELECT id, SUM(id) OVER (ORDER BY id ROWS 2 PRECEDING) FROM items'
+```
+
+To inspect logical operators and their output schemas:
+
+```sh
+cargo run --example plan -- 'SELECT SUM(id), COUNT(*) FROM items HAVING COUNT(*) > 0'
+```
+
+Logical planning handles queries and commands, including grouping, windowing,
+ordering, and CTID-based modification-row identity. INSERT, UPDATE, and DELETE share a ModifyTable
+logical extension with operation-specific payloads. These examples do not execute SQL. Selected upstream optimizer
+rules are exercised in integration tests; a production optimizer pipeline,
+physical planning, and execution are not implemented.
 
 | Crate | Responsibility |
 | --- | --- |
+| [`chilidb-common`](crates/common/README.md) | Shared identifiers, including relation-local tuple-version CTIDs |
 | [`chilidb-peg`](crates/peg/README.md) | `peg::grammar!`: compile PEG grammars into Rust matchers and borrowed parse trees |
 | [`chilidb-parser`](crates/parser/README.md) | SQL grammar, AST types, and fallible tree-to-AST conversion |
 | [`chilidb-binder`](crates/binder/README.md) | Catalog-backed name resolution, typed expressions, and bound SQL commands |
-| `chilidb` | Library entry point; re-exports `chilidb::parser` and `chilidb::binder` |
+| [`chilidb-planner`](crates/planner/README.md) | Bound-AST to DataFusion logical plans, SQL output metadata, and ModifyTable operations |
+| `chilidb` | Library entry point; re-exports `common`, `parser`, `binder`, and `planner` |
 
 ```text
 PEG grammar ──compile time──> Rust matchers
@@ -41,14 +60,21 @@ SQL text ───────────────────────�
                                   │ ParseNode::parse
                                   ↓
                             Statement<'sql> AST
+                                  │ Binder::bind
+                                  ↓
+                            bound::Statement<'sql>
+                                  │ Planner::plan
+                                  ↓
+                            DataFusion query / modification plan
+                            or nonrelational command
 ```
 
 Matching operates directly on UTF-8 text, with explicit whitespace and keyword
 boundaries. AST conversion runs after the complete input matches, outside
 speculative parsing. The parser performs no catalog lookup or type checking. The binder validates
-queries and commands against a catalog and inserts explicit casts; planning and
-execution are separate layers. Downstream layers consume AST types rather than
-PEG rule names.
+queries and commands against a catalog and inserts explicit casts. Planning
+consumes this bound AST and builds DataFusion operators, not PEG rule names.
+Execution is a separate layer.
 
 Nodes borrow matched text and retain byte spans for diagnostics. AST text is
 borrowed unless identifier normalization or quote unescaping requires a copy.
@@ -58,7 +84,16 @@ before the AST.
 See the crate documentation for grammar syntax, supported SQL, and resource
 limits. The PEG matcher has no memoization or runtime rule registration.
 
+## Execution design draft
+
+[Source-selected pipelines](docs/pipeline-execution-draft.md) describe tuple
+execution for heap-backed sources, columnar execution for other sources, and
+explicit materialization/state-transfer boundaries. This is a design draft;
+physical execution is not implemented.
+
 ## Development
+
+Rust 1.94 or later is required by the pinned DataFusion 55.1.0 dependencies.
 
 ```sh
 cargo fmt --all --check
@@ -68,7 +103,8 @@ cargo doc --workspace --no-deps
 ```
 
 Tests cover PEG matching and compile-time validation, SQL syntax and precedence,
-borrowing, malformed nodes, and frontend integration without a catalog or storage.
+borrowing, malformed nodes, catalog-backed binding, aggregate/window scope rules,
+and logical-plan construction. No execution or storage engine is required.
 Agent workflows are documented in [AGENT.md](AGENT.md).
 
 ## References

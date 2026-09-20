@@ -1,0 +1,19 @@
+[package]
+name = "chilidb-planner"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+
+[dependencies]
+chilidb-common = { path = "../common" }
+chilidb-binder = { path = "../binder" }
+thiserror = "2"
+recursive = "0.1.1"
+arrow-schema.workspace = true
+datafusion-common.workspace = true
+datafusion-expr.workspace = true
+datafusion-functions-aggregate.workspace = true
+datafusion-functions-window.workspace = true
+
+[dev-dependencies]
+datafusion-optimizer.workspace = true

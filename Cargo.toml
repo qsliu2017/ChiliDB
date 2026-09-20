@@ -1,12 +1,29 @@
 [workspace]
-members = ["crates/peg", "crates/parser", "crates/binder"]
+members = ["crates/common", "crates/peg", "crates/parser", "crates/binder", "crates/planner"]
 resolver = "3"
+
+[workspace.dependencies]
+arrow-schema = "=59.3.0"
+datafusion-common = { version = "=55.1.0", default-features = false }
+datafusion-expr = { version = "=55.1.0", default-features = false, features = ["recursive_protection"] }
+datafusion-functions-aggregate = { version = "=55.1.0", default-features = false }
+datafusion-functions-window = { version = "=55.1.0", default-features = false }
+datafusion-optimizer = { version = "=55.1.0", features = ["recursive_protection"] }
 
 [package]
 name = "chilidb"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.94"
 
 [dependencies]
+chilidb-common = { path = "crates/common" }
 chilidb-binder = { path = "crates/binder" }
 chilidb-parser = { path = "crates/parser" }
+chilidb-planner = { path = "crates/planner" }
+
+[dev-dependencies]
+arrow-schema.workspace = true
+datafusion-common.workspace = true
+datafusion-expr.workspace = true
+datafusion-optimizer.workspace = true
