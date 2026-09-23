@@ -2,14 +2,16 @@
 
 ## Scope and status
 
-This is an execution architecture draft. ChiliDB currently parses, binds, and
-builds DataFusion logical plans, including ModifyTable operations. There is no
-physical planner, heap implementation, buffer manager, or executor yet.
+This is an exploratory alternative, not the active execution architecture.
+ChiliDB uses DataFusion's native physical planner and pull-based Arrow executor.
+Page stores, buffering, byte-record heaps, and heap-backed metadata are implemented
+separately. SQL tuple encoding, table-scan integration, MVCC, and transaction
+management remain future work.
 
 DataFusion remains the logical optimization representation. Using that
 representation does not require DataFusion's RecordBatch-stream executor.
-ChiliDB will lower optimized logical plans into its own physical operators and
-explicit pipelines.
+This alternative would lower optimized logical plans into separate physical
+operators and explicit pipelines; the default backend does not take that path.
 
 ## Goal
 

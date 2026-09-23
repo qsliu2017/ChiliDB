@@ -1,0 +1,13 @@
+[package]
+name = "chilidb-heapam"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+
+[dependencies]
+chilidb-common = { path = "../common" }
+chilidb-storage = { path = "../storage" }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -24,5 +24,14 @@ pub use chilidb_planner as planner;
 /// Explicit logical rewrite pipelines and statement-boundary validation.
 pub use chilidb_optimizer as optimizer;
 
+/// Native DataFusion execution over planned queries.
+pub use chilidb_executor as executor;
+
 /// Page stores, buffer pins, latches, and replacement.
 pub use chilidb_storage as storage;
+
+/// Slotted-page heap access and CTID-addressed records.
+pub use chilidb_heapam as heapam;
+
+/// Heap-backed table metadata and binder-compatible table handles.
+pub use chilidb_catalog as catalog;

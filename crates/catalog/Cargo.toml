@@ -1,0 +1,15 @@
+[package]
+name = "chilidb-catalog"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+
+[dependencies]
+chilidb-binder = { path = "../binder" }
+chilidb-heapam = { path = "../heapam" }
+chilidb-storage = { path = "../storage" }
+thiserror = "2"
+
+[dev-dependencies]
+chilidb-parser = { path = "../parser" }
+tempfile = "3"

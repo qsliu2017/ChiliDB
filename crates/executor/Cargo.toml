@@ -1,0 +1,16 @@
+[package]
+name = "chilidb-executor"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+
+[dependencies]
+chilidb-planner = { path = "../planner" }
+datafusion.workspace = true
+arrow-array.workspace = true
+thiserror = "2"
+
+[dev-dependencies]
+chilidb-parser = { path = "../parser" }
+chilidb-binder = { path = "../binder" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
