@@ -1,0 +1,13 @@
+[package]
+name = "chilidb-storage"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+
+[dependencies]
+chilidb-common = { path = "../common" }
+thiserror = "2"
+
+[dev-dependencies]
+stateright = "=0.31.0"
+tempfile = "3"

@@ -23,3 +23,6 @@ pub use chilidb_planner as planner;
 
 /// Explicit logical rewrite pipelines and statement-boundary validation.
 pub use chilidb_optimizer as optimizer;
+
+/// Page stores, buffer pins, latches, and replacement.
+pub use chilidb_storage as storage;
