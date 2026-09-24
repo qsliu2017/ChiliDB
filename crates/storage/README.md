@@ -95,8 +95,8 @@ Page bytes occupy one contiguous, 8 KiB-aligned allocation, with each page at an
 Content locks are RwLock<()> fields in descriptors, not wrappers around pages.
 The fixed allocation never grows or moves while pins exist.
 
-`pin(PageId)` resolves or loads a stored page and returns a `PinnedBuffer` without
-holding a content lock. Its `BufferId` identifies a resident slot, not a stored
+`pin(PageId)` resolves or loads a stored page and returns a
+`PinnedBuffer<&BufferPool>` that retains residency. Its `BufferId` identifies a resident slot, not a stored
 page; slots can be reused after unpinning. PageId is the lookup key, so callers
 cannot accidentally pin a stale buffer-slot identity.
 
@@ -106,9 +106,12 @@ callback returns or unwinds. The pin remains until PinnedBuffer drops, so caller
 can retain residency across several short accesses without retaining the latch.
 References into the page cannot escape the callbacks through safe Rust.
 
-The pin contains a borrowed pool pointer and two u32 values: BufferId and PageId.
-It occupies 16 bytes on the supported 64-bit layout, without an Arc clone or a
-global pool lookup. Its borrow keeps the owning pool alive.
+`PinnedBuffer<P: AsRef<BufferPool>>` stores its pool handle and two u32 values:
+BufferId and PageId. Access and Drop resolve the handle through `AsRef`.
+Private construction preserves the originating pool's identity for the pin's
+lifetime. Pool methods create borrowed handles; `PinnedBuffer<&BufferPool>`
+occupies 16 bytes on the supported 64-bit layout, and its borrow keeps the pool
+alive.
 
 Write access conservatively marks dirty before invoking the callback, while
 holding the exclusive latch—even if the callback writes nothing or panics. Dirty

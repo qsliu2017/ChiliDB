@@ -116,6 +116,38 @@ pub struct BufferPool {
     state: Mutex<State>,
 }
 
+pub struct GlobalBufferPool;
+pub struct LocalBufferPool;
+
+static_assert!(@usize_eq: size_of::<PinnedBuffer<GlobalBufferPool>>(), 8);
+static_assert!(@usize_eq: size_of::<PinnedBuffer<LocalBufferPool>>(), 8);
+
+impl AsRef<BufferPool> for GlobalBufferPool {
+    fn as_ref(&self) -> &BufferPool {
+        todo!()
+    }
+}
+
+impl AsRef<BufferPool> for LocalBufferPool {
+    fn as_ref(&self) -> &BufferPool {
+        todo!()
+    }
+}
+
+impl GlobalBufferPool {
+    pub fn pin(&self, page: PageId) -> Result<PinnedBuffer<Self>> {
+        self.as_ref().pin(page).map(|pinned| {
+            let PinnedBuffer { index, page, .. } = pinned;
+            std::mem::forget(pinned);
+            PinnedBuffer {
+                pool: Self,
+                index,
+                page,
+            }
+        })
+    }
+}
+
 impl fmt::Debug for BufferPool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BufferPool")
@@ -192,7 +224,7 @@ impl BufferPool {
         &self,
         state: &mut State,
         page: PageId,
-    ) -> Result<Option<PinnedBuffer<'_>>> {
+    ) -> Result<Option<PinnedBuffer<&Self>>> {
         let Some(&index) = state.pages.get(&page) else {
             return Ok(None);
         };
@@ -216,7 +248,7 @@ impl BufferPool {
     }
 
     /// Pin a stored page without retaining a content latch.
-    pub fn pin(&self, page: PageId) -> Result<PinnedBuffer<'_>> {
+    pub fn pin(&self, page: PageId) -> Result<PinnedBuffer<&Self>> {
         let mut state = self.state()?;
         if let Some(pin) = self.resident_pin::<true>(&mut state, page)? {
             return Ok(pin);
@@ -238,7 +270,7 @@ impl BufferPool {
         Ok(self.loaded_pin(&mut state, index, page))
     }
 
-    fn loaded_pin(&self, state: &mut State, index: usize, page: PageId) -> PinnedBuffer<'_> {
+    fn loaded_pin(&self, state: &mut State, index: usize, page: PageId) -> PinnedBuffer<&Self> {
         // Own the pin before invoking policy code so unwind cannot leak it.
         let pin = PinnedBuffer {
             pool: self,
@@ -280,7 +312,7 @@ impl BufferPool {
 
     /// Allocate a zeroed, clean page and pin it without a content latch.
     /// AllPinned is checked before allocation, so no unreachable page is created.
-    pub fn new_page(&self) -> Result<PinnedBuffer<'_>> {
+    pub fn new_page(&self) -> Result<PinnedBuffer<&Self>> {
         let mut state = self.state()?;
         let index = state.victim(&self.buffer_desc_array)?;
         self.check(index)?;
@@ -330,8 +362,8 @@ impl BufferPool {
     }
 }
 
-/// A borrowed eviction pin, independent of the page's content latch.
-/// A pin cannot outlive its pool:
+/// An eviction pin retaining a pool handle, independent of the content latch.
+/// Pool methods return `PinnedBuffer<&BufferPool>`, borrowing the owning pool:
 /// ```compile_fail
 /// use chilidb_storage::{BufferPool, MemoryPageStore};
 /// use std::sync::Arc;
@@ -343,24 +375,31 @@ impl BufferPool {
 /// ```
 /// Callbacks cannot return references into a page:
 /// ```compile_fail
-/// use chilidb_storage::PinnedBuffer;
-/// fn escape<'a>(pin: &'a PinnedBuffer<'_>) -> &'a chilidb_storage::Page {
+/// use chilidb_storage::{BufferPool, PinnedBuffer};
+/// fn escape<'a, P: AsRef<BufferPool>>(pin: &'a PinnedBuffer<P>) -> &'a chilidb_storage::Page {
 ///     pin.read(|page| page).unwrap()
 /// }
 /// ```
 /// ```compile_fail
-/// use chilidb_storage::PinnedBuffer;
-/// fn escape<'a>(pin: &'a PinnedBuffer<'_>) -> &'a mut chilidb_storage::Page {
+/// use chilidb_storage::{BufferPool, PinnedBuffer};
+/// fn escape<'a, P: AsRef<BufferPool>>(pin: &'a PinnedBuffer<P>) -> &'a mut chilidb_storage::Page {
 ///     pin.write(|page| page).unwrap()
 /// }
 /// ```
-pub struct PinnedBuffer<'a> {
-    pool: &'a BufferPool,
+pub struct PinnedBuffer<P: AsRef<BufferPool>> {
+    // Constructors retain a handle that resolves to the same pool for the pin's lifetime.
+    pool: P,
     index: BufferId,
     page: PageId,
 }
 
-impl PinnedBuffer<'_> {
+impl AsRef<BufferPool> for BufferPool {
+    fn as_ref(&self) -> &BufferPool {
+        self
+    }
+}
+
+impl<P: AsRef<BufferPool>> PinnedBuffer<P> {
     pub fn page_id(&self) -> PageId {
         self.page
     }
@@ -369,49 +408,51 @@ impl PinnedBuffer<'_> {
     }
 
     pub fn read<T>(&self, read: impl FnOnce(&Page) -> T) -> Result<T> {
-        let desc = &self.pool.buffer_desc_array[self.index.get() as usize];
+        let pool = self.pool.as_ref();
+        let desc = &pool.buffer_desc_array[self.index.get() as usize];
         let _lock = desc
             .content_lock
             .read()
             .map_err(|_| BufferError::Poisoned)?;
-        self.pool.check(self.index.get() as usize)?;
+        pool.check(self.index.get() as usize)?;
         // SAFETY: this pin prevents replacement, the read lock excludes mutation,
         // and the callback's independent return lifetime prevents reference escape.
         Ok(read(unsafe {
-            &*self.pool.buffer_array[self.index.get() as usize].0.get()
+            &*pool.buffer_array[self.index.get() as usize].0.get()
         }))
     }
 
     /// Marks dirty before invoking the callback, even if it does not modify bytes.
     /// Avoid recursively latching this page from a callback (it may deadlock).
     pub fn write<T>(&self, write: impl FnOnce(&mut Page) -> T) -> Result<T> {
-        let desc = &self.pool.buffer_desc_array[self.index.get() as usize];
+        let pool = self.pool.as_ref();
+        let desc = &pool.buffer_desc_array[self.index.get() as usize];
         let _lock = desc
             .content_lock
             .write()
             .map_err(|_| BufferError::Poisoned)?;
-        self.pool.check(self.index.get() as usize)?;
+        pool.check(self.index.get() as usize)?;
         desc.dirty.store(true, Ordering::Release);
         // SAFETY: this pin prevents replacement and the write lock excludes all
         // other byte access. The callback cannot return a borrowed page reference.
         Ok(write(unsafe {
-            &mut *self.pool.buffer_array[self.index.get() as usize].0.get()
+            &mut *pool.buffer_array[self.index.get() as usize].0.get()
         }))
     }
 }
 
-impl Drop for PinnedBuffer<'_> {
+impl<P: AsRef<BufferPool>> Drop for PinnedBuffer<P> {
     fn drop(&mut self) {
         // No metadata lock: safe during unwind and while another operation holds
         // metadata. All this pin's callbacks/latches have finished before Drop.
-        let old = self.pool.buffer_desc_array[self.index.get() as usize]
+        let old = self.pool.as_ref().buffer_desc_array[self.index.get() as usize]
             .pins
             .fetch_sub(1, Ordering::AcqRel);
         debug_assert!(old > 0);
     }
 }
 
-impl fmt::Debug for PinnedBuffer<'_> {
+impl<P: AsRef<BufferPool>> fmt::Debug for PinnedBuffer<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PinnedBuffer")
             .field("page_id", &self.page_id())
@@ -443,6 +484,27 @@ mod tests {
         ));
         assert_eq!(desc.pins.load(Ordering::Acquire), u32::MAX);
         desc.pins.store(1, Ordering::Release);
+    }
+
+    #[test]
+    fn arc_backed_pin_access_and_drop() {
+        let pool = Arc::new(BufferPool::new(1, Arc::new(MemoryPageStore::new())).unwrap());
+        let borrowed = pool.new_page().unwrap();
+        let pin = PinnedBuffer {
+            pool: Arc::clone(&pool),
+            index: borrowed.index,
+            page: borrowed.page,
+        };
+        // Transfer the existing pin-count increment to the owned handle.
+        std::mem::forget(borrowed);
+        assert_eq!(Arc::strong_count(&pool), 2);
+        pin.write(|page| page[0] = 42).unwrap();
+        assert_eq!(pin.read(|page| page[0]).unwrap(), 42);
+        assert!(format!("{pin:?}").contains("PinnedBuffer"));
+        assert!(matches!(pool.new_page(), Err(BufferError::AllPinned)));
+        drop(pin);
+        assert_eq!(Arc::strong_count(&pool), 1);
+        pool.new_page().unwrap();
     }
 
     struct FixedVictim(BufferId);
@@ -482,10 +544,11 @@ mod tests {
     fn array_layout_and_thread_traits() {
         fn send_sync<T: Send + Sync>() {}
         send_sync::<BufferPool>();
-        send_sync::<PinnedBuffer<'_>>();
+        send_sync::<PinnedBuffer<&BufferPool>>();
+        send_sync::<PinnedBuffer<Arc<BufferPool>>>();
         let pool = BufferPool::new(4, Arc::new(MemoryPageStore::new())).unwrap();
         #[cfg(target_pointer_width = "64")]
-        assert_eq!(size_of::<PinnedBuffer<'_>>(), 16);
+        assert_eq!(size_of::<PinnedBuffer<&BufferPool>>(), 16);
         assert_eq!(size_of::<AlignedPage>(), PAGE_SIZE);
         let base = pool.buffer_array.as_ptr() as usize;
         let desc_base = pool.buffer_desc_array.as_ptr() as usize;
