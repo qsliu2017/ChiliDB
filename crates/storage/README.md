@@ -151,6 +151,23 @@ handle errors. There is no crash-atomic page write, WAL-before-data enforcement,
 transaction commit, or rollback. An I/O failure can leave a partially written
 backing page even though the buffer retains its valid dirty copy.
 
+## Benchmark
+
+`benches/bpm_bench.rs` is a Criterion benchmark of BusTub's `bpm_bench` workload:
+64 frames, 6400 pages, 8 scan threads reading disjoint contiguous ranges, and
+8 get threads updating Zipf(0.8)-selected pages they own exclusively. Each
+benchmark reports the aggregate throughput of one thread kind while the other
+kind runs concurrently. The `latency` variants apply BusTub's simulated disk
+latency: 1 ms per random access, or 100 us near one of the last four accesses.
+Every access validates page contents, and a final pass checks all updates.
+
+```text
+cargo bench -p chilidb-storage --bench bpm_bench
+```
+
+Store I/O runs under the metadata mutex, so latency serializes misses and can
+starve threads waiting for that mutex.
+
 ## Boundary for the next layers
 
 [`chilidb-heapam`](../heapam/README.md) implements slotted byte records, heap page
