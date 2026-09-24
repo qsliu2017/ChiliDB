@@ -2,7 +2,7 @@ use std::{
     alloc::Layout,
     cell::UnsafeCell,
     collections::HashMap,
-    fmt, io,
+    fmt,
     sync::{
         Arc, Mutex, MutexGuard, RwLock,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -11,27 +11,10 @@ use std::{
 
 use chilidb_common::static_assert;
 
-use crate::{BufferId, ClockStrategy, PAGE_SIZE, Page, PageId, PageStore, VictimStrategy};
-
-#[derive(Debug, thiserror::Error)]
-pub enum BufferError {
-    #[error(
-        "buffer capacity must be nonzero and fit the frame address space and allocation layout"
-    )]
-    InvalidCapacity,
-    #[error("all buffer frames are pinned")]
-    AllPinned,
-    #[error("replacement policy selected an invalid or pinned victim: {0:?}")]
-    InvalidVictim(BufferId),
-    #[error("buffer lock is poisoned")]
-    Poisoned,
-    #[error("page pin count overflow")]
-    PinOverflow,
-    #[error(transparent)]
-    Io(#[from] io::Error),
-}
-
-type Result<T> = std::result::Result<T, BufferError>;
+use crate::{
+    BufferError, BufferId, ClockStrategy, PAGE_SIZE, Page, PageId, PageStore, Result,
+    VictimStrategy,
+};
 
 #[repr(C, align(8192))]
 struct AlignedPage(UnsafeCell<Page>);

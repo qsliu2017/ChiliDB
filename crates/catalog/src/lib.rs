@@ -1,4 +1,22 @@
-#![doc = include_str!("../README.md")]
+//! Heap-backed catalog of versioned table definitions.
+//!
+//! `HeapCatalog::create` allocates a metadata heap whose root holds a versioned
+//! manifest; the root is not necessarily page zero, so callers retain
+//! `root_page_id()` and pass it to `open`. Records store names, column types and
+//! nullability, constraint column indices, and table heap heads. They are
+//! metadata records, not SQL-queryable system tables.
+//!
+//! Share one catalog per root with `Arc`. Creation and lookup serialize through
+//! a mutex, and cached `HeapTableSource` handles keep their `Arc` identity. `open`
+//! validates all metadata, rejecting missing manifests, malformed records,
+//! duplicate names, and duplicate or self-referencing heap roots.
+//!
+//! Names are stored as supplied; the binder normalizes identifiers. Declarations,
+//! metadata size, and name uniqueness are checked before allocating a table heap,
+//! but a failed publication can orphan a heap page. Reopening requires a
+//! successful pool flush with mutations quiesced and old handles dropped.
+//! Constraints are metadata only. There is no WAL, crash-atomic publication,
+//! MVCC, DROP, or ALTER.
 
 mod codec;
 

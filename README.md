@@ -62,16 +62,16 @@ implemented yet. Constant queries, including supported aggregates/windows, can r
 
 | Crate | Responsibility |
 | --- | --- |
-| [`chilidb-common`](crates/common/README.md) | Shared identifiers, including relation-local tuple-version CTIDs |
+| [`chilidb-common`](crates/common/src/lib.rs) | Shared identifiers, including relation-local tuple-version CTIDs |
 | [`chilidb-peg`](crates/peg/README.md) | `peg::grammar!`: compile PEG grammars into Rust matchers and borrowed parse trees |
 | [`chilidb-parser`](crates/parser/README.md) | SQL grammar, AST types, and fallible tree-to-AST conversion |
 | [`chilidb-binder`](crates/binder/README.md) | Catalog-backed name resolution, typed expressions, and bound SQL commands |
 | [`chilidb-planner`](crates/planner/README.md) | Bound-AST to DataFusion logical plans, SQL output metadata, and ModifyTable operations |
-| [`chilidb-optimizer`](crates/optimizer/README.md) | Explicit rewrite pipelines, rule observation, and statement-boundary checks |
-| [`chilidb-executor`](crates/executor/README.md) | Native DataFusion query execution with SQL output metadata |
+| [`chilidb-optimizer`](crates/optimizer/src/lib.rs) | Explicit rewrite pipelines, rule observation, and statement-boundary checks |
+| [`chilidb-executor`](crates/executor/src/lib.rs) | Native DataFusion query execution with SQL output metadata |
 | [`chilidb-storage`](crates/storage/README.md) | Fixed-size page stores, buffer pins/latches, dirty flushing, and clock replacement |
 | [`chilidb-heapam`](crates/heapam/README.md) | Slotted-page byte records, CTID access, compaction, and page-bounded scans |
-| [`chilidb-catalog`](crates/catalog/README.md) | Heap-backed table metadata and stable binder-compatible table handles |
+| [`chilidb-catalog`](crates/catalog/src/lib.rs) | Heap-backed table metadata and stable binder-compatible table handles |
 | `chilidb` | Re-exports `common`, `parser`, `binder`, `planner`, `optimizer`, `executor`, `storage`, `heapam`, and `catalog` |
 
 ```text
@@ -148,7 +148,7 @@ is not commit.
 
 Storage performance work may use compact layouts, separate data/locks, and small
 unsafe boundaries without relaxing Rust's memory-safety requirements. The first
-[Stateright model](crates/storage/models/README.md) checks a proposed asynchronous
+[Stateright model](crates/storage/src/models/buffer_pool.rs) checks a proposed asynchronous
 buffer-loading protocol: victim reservation, duplicate requests, content access,
 and I/O failure recovery. It does not replace the current synchronous runtime.
 

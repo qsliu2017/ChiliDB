@@ -62,7 +62,7 @@ checked scenarios are reachable. Model checking complements compiler lifetime ch
 injection, and implementation tests; a bounded abstract model is not a proof of
 all Rust executions or of the hardware memory model.
 
-The first [buffer-loading model](models/README.md) specifies victim reservation,
+The first [buffer-loading model](src/models/buffer_pool.rs) specifies victim reservation,
 asynchronous loading, duplicate requests, and failure recovery. It is a proposed
 protocol, not the current synchronous buffer pool's implementation.
 

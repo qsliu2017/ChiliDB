@@ -115,7 +115,7 @@ does not prevent optimizing its input.
 ## Optimizer integration
 
 The planner does not install or run an optimizer pipeline. The separate
-[`chilidb-optimizer`](../optimizer/README.md) crate runs explicit rule lists over
+[`chilidb-optimizer`](../optimizer/src/lib.rs) crate runs explicit rule lists over
 planned statements. `datafusion-optimizer` remains a development dependency of
 this planner crate, used to test selected real rules against these plans,
 including optimization beneath ModifyTable with an Insert operation.

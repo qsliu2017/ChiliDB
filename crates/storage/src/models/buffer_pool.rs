@@ -1,10 +1,31 @@
-//! Finite-state model of asynchronous buffer reservation and loading.
-//! Each action represents an atomic protocol step. I/O submission precedes its
-//! single terminal completion; the frame remains reserved until completion.
-//! Cancellation releases loading waiters. Flushes exclude access to the old page.
-//! Checks cover safety and reachability under arbitrary scheduling and I/O errors.
-//! Page, frame, and backend identities index fixed vectors. Backend count bounds
-//! pin counts. A retry bit records load failure; Event records the last transition.
+//! Bounded Stateright model of a proposed asynchronous victim-reservation and
+//! page-loading protocol. The production pool still loads synchronously under
+//! its metadata mutex; it neither implements nor is shown to refine this model.
+//!
+//! Protocol:
+//! - A victim is reserved before reuse, excluding pins and new acquisitions of
+//!   its old page. Dirty data is written back first; writeback failure retains
+//!   the old page, mapping, and dirty status.
+//! - A Loading mapping is published before the read, so duplicate requests join
+//!   the in-flight load. A publisher that loses the mapping recheck releases its
+//!   reservation and joins the winner.
+//! - Only the loader touches a Loading frame. Successful completion makes the
+//!   frame Ready and pins all waiters in one atomic handoff; failure removes the
+//!   mapping, frees the frame, and lets waiters retry.
+//! - An I/O operation owns its frame until completion; cancelling a waiter never
+//!   frees a frame that I/O can still write.
+//!
+//! Scope: each action is one atomic protocol step, scheduling and I/O errors are
+//! arbitrary, and each backend has at most one outstanding request or pin. Only
+//! safety and reachability witnesses are checked, over finite bounds with
+//! fingerprint deduplication; no progress is claimed without fairness. Bytes,
+//! memory ordering, real I/O, panics, crashes, physical I/O cancellation, and
+//! late completions are outside the model.
+//!
+//! An implementation must synchronize mapping publication/recheck, reservation,
+//! pinning, and completion handoff; exclude reserved and in-flight frames from
+//! victim selection; and track free frames explicitly, since reservations and
+//! failed loads break the pool's dense never-unassigned frame prefix.
 use stateright::{Model, Property};
 
 #[derive(Clone, Debug)]
@@ -677,5 +698,40 @@ impl Model for BufferModel {
             }
         }
         properties
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BufferModel;
+    use stateright::{Checker, Model};
+
+    #[test]
+    fn proposed_protocol_exhaustive_bfs() {
+        for (frame_count, page_count, backend_count, expected_states) in [
+            (1, 1, 1, 27),
+            (1, 1, 2, 261),
+            (1, 2, 2, 1_273),
+            (2, 2, 2, 13_061),
+            (2, 3, 2, 59_296),
+            (2, 2, 3, 209_687),
+        ] {
+            let checker = BufferModel::new(frame_count, page_count, backend_count)
+                .checker()
+                .spawn_bfs()
+                .join();
+            println!(
+                "frames={frame_count} pages={page_count} backends={backend_count}: {} unique states, {} visited",
+                checker.unique_state_count(),
+                checker.state_count()
+            );
+            let mut discoveries: Vec<_> = checker.discoveries().into_iter().collect();
+            discoveries.sort_by_key(|(name, _)| *name);
+            for (name, path) in discoveries {
+                println!("{name}: {:?}", path.into_actions());
+            }
+            checker.assert_properties();
+            assert_eq!(checker.unique_state_count(), expected_states);
+        }
     }
 }

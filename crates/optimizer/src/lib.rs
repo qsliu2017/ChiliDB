@@ -1,7 +1,24 @@
-//! Explicit rule pipelines over ChiliDB's logical statement boundary.
+//! Explicit DataFusion logical rule pipelines over ChiliDB's planned statements.
 //!
-//! No rules are installed implicitly. Commands bypass optimization; queries and
-//! INSERT retain their statement contracts. UPDATE and DELETE are not enabled.
+//! Rules are upstream or custom [`OptimizerRule`]s run in the supplied order;
+//! there is no default rule set, analyzer pass, separate logical IR, cost model,
+//! or physical optimization. Each call uses a fresh context: rule failures are
+//! returned rather than skipped, time-dependent constant folding is disabled, and
+//! panics in supplied rules are not caught. Reaching the pass limit returns the
+//! current valid plan without proving that rewrites are exhausted.
+//!
+//! | Statement | Behavior |
+//! | --- | --- |
+//! | Query | Validate, optimize, reattach SQL output metadata |
+//! | INSERT | Validate, optimize, check ModifyTable root/target/completion |
+//! | UPDATE / DELETE | Error before invoking any rule; CTID preservation needs a policy |
+//! | CREATE TABLE / transaction commands | Return unchanged without invoking rules |
+//!
+//! Queries and INSERT are validated with `with_optimized_plan` before and after
+//! the pipeline. These checks preserve statement boundaries and SQL-visible output
+//! metadata; they do not prove semantic equivalence, CTID provenance, or the
+//! correctness of extension nodes, UDFs, or supplied rules. One rule can remove
+//! the pattern another targets, so test rules individually and in order.
 //!
 //! ```
 //! use chilidb_optimizer::Optimizer;
@@ -12,6 +29,8 @@
 //! assert!(matches!(statement, PlannedStatement::Command(Command::Begin)));
 //! # Ok::<(), chilidb_optimizer::OptimizeError>(())
 //! ```
+//!
+//! The workspace `optimize` example runs one explicit rule configuration.
 
 use std::{num::NonZeroU8, sync::Arc};
 
@@ -24,8 +43,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum OptimizeError {
+    /// Statement-boundary validation failed.
     #[error(transparent)]
     Plan(#[from] PlanError),
+    /// A rule failed; DataFusion's context is retained.
     #[error(transparent)]
     DataFusion(#[from] DataFusionError),
 }

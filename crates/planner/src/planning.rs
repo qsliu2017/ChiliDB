@@ -551,3 +551,204 @@ fn select<'sql>(q: &b::Select<'sql>) -> Result<PlannedStatement<'sql>, PlanError
     plan.check_invariants(datafusion_expr::logical_plan::InvariantLevel::Executable)?;
     Ok(PlannedStatement::Query { plan, output })
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{Expr, LogicalPlan, PlanError, PlannedStatement, Planner};
+    use chilidb_binder::{LogicalType, Scalar, bound as b};
+    use datafusion_expr::{LogicalPlanBuilder, lit, logical_plan::InvariantLevel};
+    use datafusion_functions_aggregate::expr_fn::count;
+    use datafusion_functions_window::expr_fn::rank;
+    use std::sync::Arc;
+
+    fn literal() -> b::Expr<'static> {
+        b::Expr {
+            data_type: LogicalType::Int32,
+            nullable: false,
+            kind: b::ExprKind::Literal(Scalar::Int32(1)),
+        }
+    }
+
+    fn query(expr: b::Expr<'static>) -> b::Statement<'static> {
+        b::Statement::Select(b::Select {
+            group_by: vec![],
+            having: None,
+            order_by: vec![],
+            is_aggregate: false,
+            source: None,
+            projection: vec![b::NamedExpr {
+                name: "one".into(),
+                expr,
+            }],
+            filter: None,
+        })
+    }
+
+    #[test]
+    fn plan_does_not_borrow_bound_statement() {
+        let plan = Planner::new().plan(&query(literal())).unwrap();
+        let PlannedStatement::Query { plan, output } = plan else {
+            panic!()
+        };
+        assert_eq!(output.fields[0].name, "one");
+        assert_eq!(output.fields[0].origin, None);
+        let LogicalPlan::Projection(p) = plan else {
+            panic!()
+        };
+        assert_eq!(p.expr.len(), 1);
+        assert!(matches!(p.input.as_ref(), LogicalPlan::EmptyRelation(e) if e.produce_one_row));
+    }
+
+    #[test]
+    fn depth_is_checked_before_structural_deduplication() {
+        let mut expr = literal();
+        for _ in 0..256 {
+            expr = b::Expr {
+                data_type: LogicalType::Int32,
+                nullable: false,
+                kind: b::ExprKind::Cast {
+                    expr: Box::new(expr),
+                },
+            };
+        }
+        assert!(matches!(
+            Planner.plan(&query(expr)),
+            Err(PlanError::ExpressionTooDeep)
+        ));
+    }
+
+    #[test]
+    fn nested_windows_are_rejected_independently_of_projection_order() {
+        let inner = b::Expr {
+            data_type: LogicalType::Int64,
+            nullable: false,
+            kind: b::ExprKind::Window(Box::new(b::WindowExpr {
+                function: b::WindowFunction::RowNumber,
+                args: vec![],
+                distinct: false,
+                filter: None,
+                partition_by: vec![],
+                order_by: vec![],
+                frame: b::WindowFrame {
+                    units: b::FrameUnits::Range,
+                    start: b::FrameBound::UnboundedPreceding,
+                    end: b::FrameBound::UnboundedFollowing,
+                },
+            })),
+        };
+        let b::ExprKind::Window(template) = &inner.kind else {
+            panic!()
+        };
+        for operand in 0..4 {
+            let mut outer = template.as_ref().clone();
+            outer.function = b::WindowFunction::Aggregate(b::AggregateFunction::Count);
+            outer.args = vec![literal()];
+            match operand {
+                0 => outer.args = vec![inner.clone()],
+                1 => outer.partition_by = vec![inner.clone()],
+                2 => {
+                    outer.order_by = vec![b::OrderByExpr {
+                        expr: inner.clone(),
+                        direction: b::SortDirection::Ascending,
+                        nulls: b::NullOrder::Last,
+                    }]
+                }
+                _ => {
+                    outer.filter = Some(Box::new(b::Expr {
+                        data_type: LogicalType::Boolean,
+                        nullable: false,
+                        kind: b::ExprKind::IsNull {
+                            expr: Box::new(inner.clone()),
+                            negated: false,
+                        },
+                    }))
+                }
+            }
+            for placement in 0..3 {
+                let mut statement = query(b::Expr {
+                    data_type: LogicalType::Int64,
+                    nullable: false,
+                    kind: b::ExprKind::Window(Box::new(outer.clone())),
+                });
+                let b::Statement::Select(select) = &mut statement else {
+                    panic!()
+                };
+                let named_inner = b::NamedExpr {
+                    name: "inner".into(),
+                    expr: inner.clone(),
+                };
+                match placement {
+                    0 => {}
+                    1 => select.projection.insert(0, named_inner),
+                    _ => select.projection.push(named_inner),
+                }
+                assert!(
+                    Planner.plan(&statement).is_err(),
+                    "operand={operand}, placement={placement}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn maximum_allowed_depth_can_be_lowered() {
+        let mut expr = literal();
+        for _ in 1..256 {
+            expr = b::Expr {
+                data_type: LogicalType::Int32,
+                nullable: false,
+                kind: b::ExprKind::Cast {
+                    expr: Box::new(expr),
+                },
+            };
+        }
+        assert!(Planner.plan(&query(expr)).is_ok());
+    }
+
+    /// DataFusion's aggregate replaces its input schema; window appends to it.
+    #[test]
+    fn aggregation_and_windows_have_distinct_output_layouts() {
+        let input = LogicalPlanBuilder::values(vec![vec![lit(1i32)]])
+            .unwrap()
+            .build()
+            .unwrap();
+        let key = Expr::Column(input.schema().qualified_field(0).0.map_or_else(
+            || datafusion_common::Column::from_name(input.schema().field(0).name()),
+            |q| datafusion_common::Column::new(Some(q.clone()), input.schema().field(0).name()),
+        ));
+        let grouped = LogicalPlanBuilder::from(input)
+            .aggregate(vec![key.clone()], vec![count(key).alias("count")])
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(grouped.schema().fields().len(), 2);
+        let window = LogicalPlanBuilder::from(grouped.clone())
+            .window(vec![rank().alias("rank")])
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(window.schema().fields().len(), 3);
+        assert_eq!(
+            &window.schema().fields()[..2],
+            grouped.schema().fields().as_ref()
+        );
+        let sorted = LogicalPlanBuilder::from(window)
+            .sort(vec![datafusion_expr::col("rank").sort(true, false)])
+            .unwrap()
+            .build()
+            .unwrap();
+        sorted.check_invariants(InvariantLevel::Executable).unwrap();
+        let LogicalPlan::Sort(sort) = sorted else {
+            panic!()
+        };
+        let LogicalPlan::Window(window) = Arc::unwrap_or_clone(sort.input) else {
+            panic!()
+        };
+        assert_eq!(window.window_expr.len(), 1);
+        let LogicalPlan::Aggregate(aggregate) = window.input.as_ref() else {
+            panic!()
+        };
+        assert_eq!(aggregate.group_expr.len(), 1);
+        assert_eq!(aggregate.aggr_expr.len(), 1);
+    }
+}

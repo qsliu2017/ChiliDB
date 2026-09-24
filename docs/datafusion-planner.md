@@ -164,7 +164,7 @@ commands cannot accept a replacement relational plan.
 These are structural safeguards, not a proof that arbitrary rules preserve modification
 effects. Relational query and modification inputs reject both nested ModifyTable nodes
 and native DataFusion DML/DDL/statement/COPY nodes, including within subqueries.
-[`chilidb-optimizer`](../crates/optimizer/README.md) accepts an explicit ordered
+[`chilidb-optimizer`](../crates/optimizer/src/lib.rs) accepts an explicit ordered
 rule list, propagates rule errors, and applies statement-boundary checks before
 and after optimization. It has no implicit default rules. Commands pass through
 without running rules; UPDATE/DELETE optimization returns an error. Directly
